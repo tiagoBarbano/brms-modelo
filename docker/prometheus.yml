@@ -1,0 +1,27 @@
+scrape_configs:
+  # - job_name: 'demo'
+  #   metrics_path: '/actuator/prometheus'
+  #   scrape_interval: 5s
+  #   static_configs:
+  #     - targets: ['host.docker.internal:10001']
+  # - job_name: 'app1-core'
+  #   scrape_interval: 10s
+  #   static_configs:
+  #     - targets: ['host.docker.internal:8400']      
+  # - job_name: 'app-core-calc'
+  #   scrape_interval: 10s
+  #   static_configs:
+  #     - targets: ['app-calculo-core:8000']
+  #     - targets: ['app1-calculo-core:8000']      
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['prometheus:9090']
+  # - job_name: 'otel-collector'
+  #   scrape_interval: 10s
+  #   static_configs:
+  #     - targets: ['otelcol:8889']
+  #     - targets: ['otelcol:8888']
+  - job_name: 'api'
+    metrics_path: '/python-corp-snps-brms-service/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
