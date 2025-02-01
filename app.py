@@ -1,7 +1,8 @@
-import shap
+from datetime import datetime
 import requests
 import json
 import os
+from sklearn.model_selection import train_test_split
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,14 +10,22 @@ import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from datetime import datetime
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from database import get_database
 from config import get_settings
+from model import Model
+from repository_historico_modelo import find_all_historico_modelo
+from repository_modelos import listar_modelos, salvar_modelo
+from utils import (
+    get_modelo_forest_regressor,
+    get_modelo_xbg_regressor,
+    preprocess_data,
+    salvar_json_entrada_exemplo,
+    validar_coluna_alvo,
+    load_data,
+    gerar_modelo_pickle,
+    dividir_conjunto_dados,
+)
 
 settings = get_settings()
 
@@ -29,154 +38,14 @@ st.set_page_config(
     },
 )
 
-
-def validar_coluna_alvo(df):
-    if df is not None:
-        target_column = st.sidebar.selectbox("Escolha a variável alvo", df.columns)
-    else:
-        st.warning(
-            "⚠️ Nenhum arquivo foi carregado. Por favor, faça o upload de um arquivo CSV."
-        )
-        st.stop()
-    return target_column
-
-
-@st.cache_data
-def load_data(uploaded_file=None):
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file, delimiter=";")
-        df.columns = df.columns.str.strip()
-        return df
-    else:
-        return None
-
-
-def preprocess_data(df, target_column):
-    df = df.copy()
-    categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
-    if target_column in categorical_cols:
-        categorical_cols.remove(target_column)
-
-    df = pd.get_dummies(df, columns=categorical_cols, prefix=categorical_cols)
-    df.columns = [
-        col.replace("[", "")
-        .replace("]", "")
-        .replace("<", "")
-        .replace(">", "")
-        .replace(" ", "_")
-        for col in df.columns
-    ]
-
-    return df, categorical_cols
-
-
 menu_option = st.sidebar.radio(
     "Selecione uma opção",
-    ["Treinamento", "Comparação", "Previsão", "Deploy", "Download"],
+    ["Treinamento", "Comparação", "Modelo Custom", "Previsão", "Deploy", "Download"],
 )
 
 df = None
 uploaded_file = st.sidebar.file_uploader("Faça upload de um arquivo CSV", type=["csv"])
 df = load_data(uploaded_file)
-
-
-def gerar_modelo_pickle(
-    uploaded_file, X_train, modelo, modelo_selecionado, mae, mse, r2
-):
-    modelo_salvo = {"modelo": modelo, "features": X_train.columns.tolist()}
-
-    data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"modelo_{modelo_selecionado}_{os.path.splitext(uploaded_file.name)[0]}_{data_hora}.pkl"
-
-    with open(model_filename, "wb") as f:
-        pickle.dump(modelo_salvo, f)
-
-    with get_database() as db:
-        collection_model = db[settings.collection_model]
-
-        collection_model.insert_one(
-            {
-                "data_treinamento": data_hora,
-                "modelo": modelo_selecionado,
-                "mae": mae,
-                "mse": mse,
-                "r2": r2,
-                "arquivo": model_filename,
-            }
-        )
-
-    st.sidebar.success(f"✅ Modelo salvo como {model_filename} e histórico atualizado!")
-    return model_filename
-
-
-@st.cache_data
-def dividir_conjunto_dados(df, target_column):
-    X = df.drop(columns=[target_column])
-    y = df[target_column]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    return X_train, X_test, y_train, y_test
-
-
-def get_modelo_forest_regressor():
-    n_estimators = st.sidebar.slider(
-        "Número de Árvores", 10, 500, 100, 10, key="rf_n_estimators"
-    )
-    max_depth = st.sidebar.slider(
-        "Profundidade Máxima", 1, 50, 10, 1, key="rf_max_depth"
-    )
-    min_samples_split = st.sidebar.slider(
-        "Mínimo de Amostras para Divisão", 2, 20, 2, 1, key="rf_min_samples_split"
-    )
-    min_samples_leaf = st.sidebar.slider(
-        "Mínimo de Amostras por Folha", 1, 20, 1, 1, key="rf_min_samples_leaf"
-    )
-
-    modelo = RandomForestRegressor(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        min_samples_split=min_samples_split,
-        min_samples_leaf=min_samples_leaf,
-        random_state=42,
-    )
-    return modelo
-
-
-def get_modelo_xbg_regressor():
-    learning_rate = st.sidebar.slider(
-        "Taxa de Aprendizado", 0.01, 1.0, 0.1, 0.01, key="xgb_learning_rate"
-    )
-    n_estimators = st.sidebar.slider(
-        "Número de Árvores", 10, 500, 100, 10, key="xgb_n_estimators"
-    )
-    max_depth = st.sidebar.slider(
-        "Profundidade Máxima", 1, 50, 6, 1, key="xgb_max_depth"
-    )
-    subsample = st.sidebar.slider(
-        "Subamostragem", 0.1, 1.0, 1.0, 0.1, key="xgb_subsample"
-    )
-    colsample_bytree = st.sidebar.slider(
-        "Amostragem de Colunas", 0.1, 1.0, 1.0, 0.1, key="xgb_colsample_bytree"
-    )
-
-    modelo = XGBRegressor(
-        learning_rate=learning_rate,
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        subsample=subsample,
-        colsample_bytree=colsample_bytree,
-        random_state=42,
-    )
-    return modelo
-
-
-def salvar_json_entrada_exemplo(uploaded_file, sample_input):
-    json_filename = f"entrada_{os.path.splitext(uploaded_file.name)[0]}.json"
-
-    with open(json_filename, "w") as f:
-        json.dump(sample_input, f, indent=4)
-        
 
 mae = ""
 mse = ""
@@ -184,24 +53,37 @@ r2 = ""
 
 if menu_option == "Treinamento":
     st.title("📊 Treinamento do Modelo")
-    aba_dataset, aba_modelo = st.tabs(["📊 Análise do Dataset", "📈 Avaliação do Modelo"])
+    aba_dataset, aba_modelo = st.tabs(
+        ["📊 Análise do Dataset", "📈 Avaliação do Modelo"]
+    )
 
     target_column = validar_coluna_alvo(df)
     df, categorical_cols = preprocess_data(df, target_column)
     X_train, X_test, y_train, y_test = dividir_conjunto_dados(df, target_column)
-    
+
     sample_input = X_train.iloc[0].to_dict()
     salvar_json_entrada_exemplo(uploaded_file, sample_input)
-    
+
     st.sidebar.header("Configurações do Modelo")
-    modelo_selecionado = st.sidebar.selectbox("Escolha o Modelo", ["Random Forest", "XGBoost"])
+    modelo_selecionado = st.sidebar.selectbox("Escolha o Modelo", ["Random Forest", "XGBoost", "Custom"])
 
     if modelo_selecionado == "Random Forest":
         modelo = get_modelo_forest_regressor()
-
     elif modelo_selecionado == "XGBoost":
         modelo = get_modelo_xbg_regressor()
+    elif modelo_selecionado == "Custom":
+        modelos_custom = listar_modelos()
 
+        # Se houver modelos, permitir seleção e download
+        if modelos_custom:
+            df_modelos = pd.DataFrame(modelos_custom)
+            modelos = [f"{m['arquivo_pickle']}" for m in modelos_custom]
+            
+            model_filename = st.sidebar.selectbox("Escolha o modelo para treinamento", modelos)
+
+            with open(model_filename, "rb") as f:
+                modelo = pickle.load(f)
+        
     if "modelo" not in st.session_state or st.session_state["modelo"] is None:
         st.session_state["modelo"] = {}
 
@@ -213,9 +95,7 @@ if menu_option == "Treinamento":
         st.write(df.describe())
 
         st.subheader("📊 Estatísticas por Variável")
-        coluna_selecionada = st.selectbox(
-            "Escolha uma variável para análise", df.columns
-        )
+        coluna_selecionada = st.selectbox("Escolha uma variável para análise", df.columns)
         st.write(df[coluna_selecionada].describe())
 
     with aba_modelo:
@@ -240,7 +120,7 @@ if menu_option == "Treinamento":
                 mse=mse,
                 r2=r2,
             )
-        
+
         st.write(f"### Desempenho do Modelo: {modelo_selecionado} - {uploaded_file.name}")
         st.write(f"📉 **MAE:** {mae:.2f}")
         st.write(f"📉 **MSE:** {mse:.2f}")
@@ -359,69 +239,73 @@ if menu_option == "Comparação":
                 st.bar_chart(df_importance.set_index("Feature"))
 
 if menu_option == "Previsão":
-    st.title("📈 Previsão de Preço")
-
-    st.sidebar.header("Fazer Previsão")
-    entrada_modelo_disponivel = [
-        file for file in os.listdir() if file.endswith(".json")
-    ]
-    entrada_modelo_escolhido = st.sidebar.selectbox(
-        "Escolha o modelo para previsão", entrada_modelo_disponivel
+    
+    aba_previsao, aba_consulta_historico_modelos = st.tabs(
+        ["📊 Previsao", "📈 Consultar Resultados Histórico"]
     )
 
-    if entrada_modelo_escolhido:
-        try:
-            with open(entrada_modelo_escolhido, "r", encoding="utf-8") as f:
-                json_data = json.load(f)
-                df = pd.json_normalize(json_data)
-        except Exception as e:
-            st.error(f"❌ Erro ao ler JSON: {e}")
+    with aba_previsao:
+        st.title("📈 Previsão de Preço")
+
+        st.sidebar.header("Fazer Previsão")
+        entrada_modelo_disponivel = [ file for file in os.listdir() if file.endswith(".json") ]
+        entrada_modelo_escolhido = st.sidebar.selectbox("Escolha o modelo para previsão", entrada_modelo_disponivel)
+
+        if entrada_modelo_escolhido:
+            try:
+                with open(entrada_modelo_escolhido, "r", encoding="utf-8") as f:
+                    json_data = json.load(f)
+                    df = pd.json_normalize(json_data)
+            except Exception as e:
+                st.error(f"❌ Erro ao ler JSON: {e}")
+                st.stop()
+        else:
+            st.warning("⚠️ Nenhum arquivo foi carregado. Por favor, faça o upload de um arquivo JSON.")
             st.stop()
-    else:
-        st.warning(
-            "⚠️ Nenhum arquivo foi carregado. Por favor, faça o upload de um arquivo JSON."
-        )
-        st.stop()
 
-    entrada_usuario = {}
+        entrada_usuario = {}
 
-    for col in df.columns:
-        if df[col].dtype in ["int64", "float64"]:
-            entrada_usuario[col] = st.sidebar.number_input(
-                f"{col}",
-                min_value=float(df[col].min()),
-                max_value=float(df[col].max()),
-                value=float(df[col].median()),
-            )
+        for col in df.columns:
+            if df[col].dtype in ["int64", "float64"]:
+                entrada_usuario[col] = st.sidebar.number_input(
+                    f"{col}",
+                    min_value=float(df[col].min()),
+                    max_value=float(df[col].max()),
+                    value=float(df[col].median()),
+                )
 
-    modelo_disponivel = [file for file in os.listdir() if file.endswith(".pkl")]
-    modelo_escolhido = st.sidebar.selectbox(
-        "Escolha o modelo para previsão", modelo_disponivel
-    )
+        modelo_disponivel = [file for file in os.listdir() if file.endswith(".pkl")]
+        modelo_escolhido = st.sidebar.selectbox("Escolha o modelo para previsão", modelo_disponivel)
 
-    if st.sidebar.button("Prever Preço"):
-        try:
-            with open(modelo_escolhido, "rb") as f:
-                modelo_data = pickle.load(f)
+        if st.sidebar.button("Prever Preço"):
+            try:
+                with open(modelo_escolhido, "rb") as f:
+                    modelo_data = pickle.load(f)
 
-            if not isinstance(modelo_data, dict):
-                raise ValueError("O arquivo do modelo não contém os dados esperados.")
+                modelo_previsao = modelo_data
+                # feature_names = modelo_data["features"]  # Pegando os nomes das features
 
-            modelo_previsao = modelo_data["modelo"]
-            feature_names = modelo_data["features"]  # Pegando os nomes das features
+                entrada_df = pd.DataFrame([entrada_usuario])
 
-            entrada_df = pd.DataFrame([entrada_usuario])
+                # Garantir que as colunas estão na mesma ordem e faltantes são preenchidas com 0
+                entrada_df = entrada_df.reindex(columns=df.columns, fill_value=0)
 
-            # Garantir que as colunas estão na mesma ordem e faltantes são preenchidas com 0
-            entrada_df = entrada_df.reindex(columns=feature_names, fill_value=0)
+                previsao = modelo_previsao.predict(entrada_df)[0]
+                st.success(f"💰 Preço Sugerido: R$ {previsao:.2f}")
 
-            previsao = modelo_previsao.predict(entrada_df)[0]
-            st.success(f"💰 Preço Sugerido: R$ {previsao:.2f}")
+            except FileNotFoundError:
+                st.error("O modelo selecionado ainda não foi treinado! Treine primeiro.")
+            
+    with aba_consulta_historico_modelos:
+        st.title("📈 Consultar Modelos")
+        st.write("Aqui voce pode consultar os modelos cadastrados.")
+        
+        modelos_disponiveis = find_all_historico_modelo()
 
-        except FileNotFoundError:
-            st.error("O modelo selecionado ainda não foi treinado! Treine primeiro.")
+        df = pd.DataFrame(modelos_disponiveis)
+        st.dataframe(df)  # Exibir tabela no Streamlit            
 
-elif menu_option == "Deploy":
+if menu_option == "Deploy":
     API_URL = "https://sua-api.com/upload"
 
     modelo_disponivel = [file for file in os.listdir() if file.endswith(".pkl")]
@@ -444,7 +328,7 @@ elif menu_option == "Deploy":
         except Exception as e:
             st.sidebar.error(f"Erro ao enviar arquivos: {str(e)}")
 
-elif menu_option == "Download":
+if menu_option == "Download":
     modelo_disponivel = [file for file in os.listdir() if file.endswith(".pkl")]
 
     # Se houver modelos, permitir seleção e download
@@ -462,3 +346,42 @@ elif menu_option == "Download":
             )
     else:
         st.sidebar.warning("Nenhum modelo disponível para download.")
+
+if menu_option == "Modelo Custom":
+    
+    aba_cadastro_modelo, aba_consulta_modelo = st.tabs(
+        ["📊 Cadastrar Modelo", "📈 Consultar Modelos"]
+    )
+    
+    with aba_cadastro_modelo:
+        st.title("📊 Cadastrar Modelo")
+        st.write("Aqui voce pode cadastrar um novo modelo de previsão.")
+        
+        uploaded_model = st.file_uploader("Upload de Modelo Pickle", type=["pkl"])
+        nome_modelo = st.text_input("Nome do Modelo")
+        tipo_modelo = st.selectbox("Tipo do Modelo", ["Custom",])
+        
+        if uploaded_model and nome_modelo:
+            file_path = f"{uploaded_model.name}"
+            with open(file_path, "wb") as f:
+                f.write(uploaded_model.read())
+        
+            dados_insert = Model(       
+                nome=nome_modelo,
+                tipo=tipo_modelo,
+                arquivo_pickle=file_path,
+                metricas=json.dumps({"MAE": 0, "MSE": 0, "R²": 0}),
+                data_treinamento=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )       
+
+            salvar_modelo(dados_insert)
+            st.sidebar.success(f"Modelo '{nome_modelo}' salvo com sucesso! ✅")
+            
+    with aba_consulta_modelo:
+        st.title("📈 Consultar Modelos")
+        st.write("Aqui voce pode consultar os modelos cadastrados.")
+        
+        modelos_disponiveis = listar_modelos()
+
+        df = pd.DataFrame(modelos_disponiveis)
+        st.dataframe(df)  # Exibir tabela no Streamlit

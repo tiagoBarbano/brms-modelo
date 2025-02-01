@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     mongo_read_preference: str
     database_mongodb: str
     collection_model: str
+    collection_historico_model: str
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
