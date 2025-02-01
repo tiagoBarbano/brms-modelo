@@ -2,6 +2,7 @@ import json
 import os
 import pickle
 import pandas as pd
+from sklearn.calibration import LabelEncoder
 import streamlit as st
 
 from datetime import datetime
@@ -23,7 +24,15 @@ def preprocess_data(df, target_column=None):
     if target_column in categorical_cols and target_column is not None:
         categorical_cols.remove(target_column)
 
-    df = pd.get_dummies(df, columns=categorical_cols, prefix=categorical_cols)
+    # df = pd.get_dummies(df, columns=categorical_cols, prefix=categorical_cols)
+    
+    # Inicializa o LabelEncoder
+    label_encoder = LabelEncoder()
+
+    # Aplica o LabelEncoder a cada coluna categórica
+    for col in categorical_cols:
+        df[col] = label_encoder.fit_transform(df[col])    
+    
     df.columns = [
         col.replace("[", "")
         .replace("]", "")
@@ -33,7 +42,7 @@ def preprocess_data(df, target_column=None):
         for col in df.columns
     ]
 
-    return df, categorical_cols
+    return df
 
 
 def validar_coluna_alvo(df):
@@ -48,9 +57,8 @@ def validar_coluna_alvo(df):
 
 
 def load_upload_file():
-    uploaded_file = st.sidebar.file_uploader(
-        "Faça upload de um arquivo CSV", type=["csv"]
-    )
+    st.sidebar.write("O arquivo dever ser um CSV delimitador por ';'!!!")
+    uploaded_file = st.sidebar.file_uploader("Faça upload de um arquivo CSV", type=["csv"])
     arquivos_disponiveis = ["Selecione um arquivo..."] + [
         f for f in os.listdir(UPLOAD_BASES_PATH) if f.endswith(".csv")
     ]
@@ -67,23 +75,23 @@ def load_upload_file():
     nome_arquivo = None
     if uploaded_file:
         nome_arquivo = uploaded_file.name
-        df = pd.read_csv(uploaded_file, delimiter=";")
-        if df.shape[1] == 1:
-            df = pd.read_csv(uploaded_file, delimiter=",")
-        st.sidebar.success("✅ Arquivo carregado com sucesso!")
+        try:
+            df = pd.read_csv(uploaded_file, delimiter=";")
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo: O delimitardor deve ser ';' - {str(e)}")
+            st.stop()
 
-        # Salvar o arquivo na pasta modelos_historicos para reutilização futura
         caminho_salvar = os.path.join(UPLOAD_BASES_PATH, uploaded_file.name)
         with open(caminho_salvar, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.sidebar.info(f"📁 Arquivo salvo em: {caminho_salvar}")
 
+        st.sidebar.info(f"✅ Arquivo carregado com sucesso e 📁 salvo em: {caminho_salvar}")
     elif arquivo_selecionado and arquivo_selecionado != "Selecione um arquivo...":
         nome_arquivo = arquivo_selecionado
-        df = pd.read_csv(
-            os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado), delimiter=";"
-        )
+        df = pd.read_csv(os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado), delimiter=";")
+
         st.sidebar.success(f"📂 Arquivo {arquivo_selecionado} carregado!")
+    
     return uploaded_file, df, nome_arquivo
 
 
