@@ -1,6 +1,9 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+UPLOAD_BASES_PATH = "upload_bases"
+DIRETORIO_MODELOS_PATH = "modelos_historicos"
+MODELOS_CUSTOM_PATH = "modelos_custom"
 
 class Settings(BaseSettings):
     aws_s3_bucket_name: str

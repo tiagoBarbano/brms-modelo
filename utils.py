@@ -9,7 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 
 from xgboost import XGBRegressor
-from config import get_settings
+from config import get_settings, UPLOAD_BASES_PATH
 from model import HistoricoModel
 from repository_historico_modelo import insert_historico_modelo
 
@@ -17,10 +17,10 @@ from repository_historico_modelo import insert_historico_modelo
 settings = get_settings()
 
 
-def preprocess_data(df, target_column):
+def preprocess_data(df, target_column=None):
     df = df.copy()
     categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
-    if target_column in categorical_cols:
+    if target_column in categorical_cols and target_column is not None:
         categorical_cols.remove(target_column)
 
     df = pd.get_dummies(df, columns=categorical_cols, prefix=categorical_cols)
@@ -47,15 +47,44 @@ def validar_coluna_alvo(df):
     return target_column
 
 
-@st.cache_data
-def load_data(uploaded_file=None):
-    # sourcery skip: remove-unnecessary-else, swap-if-else-branches
-    if uploaded_file is not None:
+def load_upload_file():
+    uploaded_file = st.sidebar.file_uploader(
+        "Faça upload de um arquivo CSV", type=["csv"]
+    )
+    arquivos_disponiveis = ["Selecione um arquivo..."] + [
+        f for f in os.listdir(UPLOAD_BASES_PATH) if f.endswith(".csv")
+    ]
+
+    # Exibir opção de seleção apenas se houver arquivos disponíveis
+    arquivo_selecionado = None
+    if arquivos_disponiveis:
+        arquivo_selecionado = st.sidebar.selectbox(
+            "📂 Ou selecione um arquivo já publicado", arquivos_disponiveis
+        )
+
+    # Carregar os dados com base na escolha do usuário
+    df = None
+    nome_arquivo = None
+    if uploaded_file:
+        nome_arquivo = uploaded_file.name
         df = pd.read_csv(uploaded_file, delimiter=";")
-        df.columns = df.columns.str.strip()
-        return df
-    else:
-        return None
+        if df.shape[1] == 1:
+            df = pd.read_csv(uploaded_file, delimiter=",")
+        st.sidebar.success("✅ Arquivo carregado com sucesso!")
+
+        # Salvar o arquivo na pasta modelos_historicos para reutilização futura
+        caminho_salvar = os.path.join(UPLOAD_BASES_PATH, uploaded_file.name)
+        with open(caminho_salvar, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.sidebar.info(f"📁 Arquivo salvo em: {caminho_salvar}")
+
+    elif arquivo_selecionado and arquivo_selecionado != "Selecione um arquivo...":
+        nome_arquivo = arquivo_selecionado
+        df = pd.read_csv(
+            os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado), delimiter=";"
+        )
+        st.sidebar.success(f"📂 Arquivo {arquivo_selecionado} carregado!")
+    return uploaded_file, df, nome_arquivo
 
 
 def gerar_modelo_pickle(
@@ -64,11 +93,14 @@ def gerar_modelo_pickle(
     # modelo_salvo = {"modelo": modelo, "features": X_train.columns.tolist()}
 
     data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"modelo_{modelo_selecionado}_{os.path.splitext(uploaded_file.name)[0]}_{data_hora}.pkl"
+    model_filename = os.path.join(
+        "modelos_historicos",
+        f"modelo_{modelo_selecionado}_{os.path.splitext(uploaded_file)[0]}_{data_hora}.pkl",
+    )
 
     with open(model_filename, "wb") as f:
         pickle.dump(modelo, f)
-    
+
     historico_modelo = HistoricoModel(
         data_treinamento=data_hora,
         modelo=modelo_selecionado,
@@ -77,12 +109,13 @@ def gerar_modelo_pickle(
         r2=r2,
         arquivo=model_filename,
     )
-    
+
     id_insert = insert_historico_modelo(historico_modelo)
 
-    st.sidebar.success(f"✅ Modelo salvo como {model_filename} e histórico atualizado! - {id_insert}")
+    st.sidebar.success(
+        f"✅ Modelo salvo como {model_filename} e histórico atualizado! - {id_insert}"
+    )
     return model_filename
-
 
 
 def dividir_conjunto_dados(df, target_column):
@@ -147,7 +180,7 @@ def get_modelo_xbg_regressor():
 
 
 def salvar_json_entrada_exemplo(uploaded_file, sample_input):
-    json_filename = f"entrada_{os.path.splitext(uploaded_file.name)[0]}.json"
+    json_filename = f"entrada_{os.path.splitext(uploaded_file)[0]}.json"
 
     with open(json_filename, "w") as f:
         json.dump(sample_input, f, indent=4)
