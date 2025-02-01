@@ -2,6 +2,7 @@ from datetime import datetime
 import requests
 import json
 import os
+import shap
 from sklearn.model_selection import train_test_split
 import streamlit as st
 import pandas as pd
@@ -71,7 +72,7 @@ if menu_option == "Treinamento":
     )
 
     target_column = validar_coluna_alvo(df)
-    df, categorical_cols = preprocess_data(df, target_column)
+    df = preprocess_data(df, target_column)
     X_train, X_test, y_train, y_test = dividir_conjunto_dados(df, target_column)
 
     sample_input = X_train.iloc[0].to_dict()
@@ -118,18 +119,56 @@ if menu_option == "Treinamento":
         st.write(df[coluna_selecionada].describe())
 
     with aba_modelo:
-        modelo.fit(X_train, y_train)
-        st.session_state["modelo"][modelo_selecionado] = modelo
-
-        y_pred = modelo.predict(X_test)
-        y_pred_class = np.round(y_pred)
-
-        mae = mean_absolute_error(y_test, y_pred)
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-
-        modelo_salvo_info = {}
         if st.sidebar.button("Treinar Modelo"):
+            modelo.fit(X_train, y_train)
+            st.session_state["modelo"][modelo_selecionado] = modelo
+
+            y_pred = modelo.predict(X_test)
+            y_pred_class = np.round(y_pred)
+
+            mae = mean_absolute_error(y_test, y_pred)
+            mse = mean_squared_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+
+            st.write(f"### Desempenho do Modelo: {modelo_selecionado} - {nome_arquivo}")
+            st.write(f"📉 **MAE:** {mae:.2f}")
+            st.write(f"📉 **MSE:** {mse:.2f}")
+            st.write(f"📈 **R²:** {r2:.2f}")
+
+            st.subheader("📊 Comparação de Preços Reais vs Previstos")
+            df_resultados = pd.DataFrame({"Real": y_test.values, "Previsto": y_pred})
+            st.line_chart(df_resultados)
+
+            df_erros = pd.DataFrame({"Erro": y_test.values - y_pred})
+            st.subheader("🔍 Erros da Previsão")
+            st.bar_chart(df_erros)
+
+            if hasattr(modelo, "feature_importances_"):
+                importances = modelo.feature_importances_
+                feature_names = X_train.columns
+                df_importance = pd.DataFrame(
+                    {"Feature": feature_names, "Importância": importances}
+                )
+                df_importance = df_importance.sort_values(by="Importância", ascending=False)
+                st.subheader("📊 Importância das Variáveis")
+                st.bar_chart(df_importance.set_index("Feature"))
+
+            # Visualização dos preços reais vs previstos
+            fig, ax = plt.subplots(figsize=(10, 5))
+            sns.histplot(y_test, label="Real", color="blue", kde=True, alpha=0.5, ax=ax)
+            sns.histplot(y_pred, label="Previsto", color="red", kde=True, alpha=0.5, ax=ax)
+            ax.legend()
+            ax.set_title("Distribuição dos preços reais vs previstos")
+            st.pyplot(fig)
+            
+            amostra_X = X_train.sample(n=50, random_state=42)
+            explainer = shap.TreeExplainer(modelo)
+            shap_values = explainer.shap_values(amostra_X)
+            st.subheader("🌟 Importância das Variáveis - Modelo com SHAP")
+            fig, ax = plt.subplots(figsize=(7, 5))
+            shap.summary_plot(shap_values, amostra_X, show=False)
+            st.pyplot(fig)
+
             model_filename = gerar_modelo_pickle(
                 uploaded_file=nome_arquivo,
                 X_train=X_train,
@@ -139,38 +178,7 @@ if menu_option == "Treinamento":
                 mse=mse,
                 r2=r2,
             )
-
-        st.write(f"### Desempenho do Modelo: {modelo_selecionado} - {nome_arquivo}")
-        st.write(f"📉 **MAE:** {mae:.2f}")
-        st.write(f"📉 **MSE:** {mse:.2f}")
-        st.write(f"📈 **R²:** {r2:.2f}")
-
-        st.subheader("📊 Comparação de Preços Reais vs Previstos")
-        df_resultados = pd.DataFrame({"Real": y_test.values, "Previsto": y_pred})
-        st.line_chart(df_resultados)
-
-        df_erros = pd.DataFrame({"Erro": y_test.values - y_pred})
-        st.subheader("🔍 Erros da Previsão")
-        st.bar_chart(df_erros)
-
-        if hasattr(modelo, "feature_importances_"):
-            importances = modelo.feature_importances_
-            feature_names = X_train.columns
-            df_importance = pd.DataFrame(
-                {"Feature": feature_names, "Importância": importances}
-            )
-            df_importance = df_importance.sort_values(by="Importância", ascending=False)
-            st.subheader("📊 Importância das Variáveis")
-            st.bar_chart(df_importance.set_index("Feature"))
-
-        # Visualização dos preços reais vs previstos
-        fig, ax = plt.subplots(figsize=(10, 5))
-        sns.histplot(y_test, label="Real", color="blue", kde=True, alpha=0.5, ax=ax)
-        sns.histplot(y_pred, label="Previsto", color="red", kde=True, alpha=0.5, ax=ax)
-        ax.legend()
-        ax.set_title("Distribuição dos preços reais vs previstos")
-        st.pyplot(fig)
-
+            
     with aba_alterar_base:
         st.subheader("📊 Alterar Base")
 
@@ -188,11 +196,9 @@ if menu_option == "Treinamento":
                 file_path = os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado)
                 # Detectar delimitador automaticamente ("," ou ";")
                 try:
-                    df = pd.read_csv(file_path, delimiter=",")
-                    if df.shape[1] == 1:  # Se tiver apenas 1 coluna, tenta ";"
-                        df = pd.read_csv(file_path, delimiter=";")
+                    df = pd.read_csv(file_path, delimiter=";")
                 except Exception as e:
-                    st.error(f"Erro ao ler o arquivo: {e}")
+                    st.error(f"Erro ao ler o arquivo: O delimitardor deve ser ';' - {str(e)}")
                     df = None
 
                 if df is not None:
@@ -201,12 +207,12 @@ if menu_option == "Treinamento":
                         df, num_rows="dynamic"
                     )  # Permite edição na interface
 
+                    id = datetime.now().strftime("%H%M%S")
+
                     # Botão para salvar alterações
                     if st.button("💾 Salvar Alterações"):
-                        new_file_path = os.path.join(
-                            UPLOAD_BASES_PATH, f"v2_{arquivo_selecionado}"
-                        )
-                        edited_df.to_csv(new_file_path, index=False)
+                        new_file_path = os.path.join(UPLOAD_BASES_PATH, f"{id}_{arquivo_selecionado}")
+                        edited_df.to_csv(new_file_path, index=False, sep=';')
                         st.success(
                             "✅ Alterações salvas com sucesso! Pronto para treinamento."
                         )
@@ -219,7 +225,7 @@ if menu_option == "Comparação":
     st.title("📊 Treinamento e Comparação de Modelos")
     target_column = validar_coluna_alvo(df)
 
-    df, categorical_cols = preprocess_data(df, target_column)
+    df = preprocess_data(df, target_column)
 
     X = df.drop(columns=[target_column])
     y = df[target_column]
