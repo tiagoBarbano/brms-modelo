@@ -52,7 +52,7 @@ if menu_option == "Treinamento":
                 st.dataframe(importance_df)
 
                 fig, ax = plt.subplots()
-                sns.barplot(x='Importancia', y='Variavel', data=importance_df, palette='viridis', ax=ax)
+                sns.barplot(x='Importancia', y='Variavel', data=importance_df.head(10), palette='viridis', ax=ax)
                 ax.set_title(f"Importância das Variáveis")
                 st.pyplot(fig)
         else:
