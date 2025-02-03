@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 UPLOAD_BASES_PATH = "upload_bases"
 DIRETORIO_MODELOS_PATH = "modelos_historicos"
 MODELOS_CUSTOM_PATH = "modelos_custom"
+CHUNK_SIZE = 1_000_000
 
 class Settings(BaseSettings):
     aws_s3_bucket_name: str

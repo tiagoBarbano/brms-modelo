@@ -69,3 +69,4 @@ boto3==1.36.10
 pydantic==2.10.3
 pydantic-settings==2.7.0
 pymongo==4.11
+duckdb==1.1.3

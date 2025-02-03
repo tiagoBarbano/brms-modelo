@@ -1,31 +1,43 @@
-from datetime import datetime
+import gc
+import numpy as np
 import requests
 import json
 import os
-import shap
-from sklearn.model_selection import train_test_split
+import time
+import xgboost as xgb
+
+from datetime import datetime
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.preprocessing import StandardScaler
 import streamlit as st
 import pandas as pd
-import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+)
 
 from config import (
     get_settings,
     UPLOAD_BASES_PATH,
     DIRETORIO_MODELOS_PATH,
     MODELOS_CUSTOM_PATH,
+    CHUNK_SIZE,
 )
 from model import Model
 from repository_historico_modelo import find_all_historico_modelo
 from repository_modelos import listar_modelos, salvar_modelo
 from utils import (
-    get_modelo_forest_regressor,
+    conn,
+    get_modelo_ramdom_forest_regressor,
     get_modelo_xbg_regressor,
-    preprocess_data,
     salvar_json_entrada_exemplo,
     validar_coluna_alvo,
     gerar_modelo_pickle,
@@ -54,11 +66,17 @@ with col2:  # Centraliza os elementos
     with c2:
         st.title("BRMS - MODELAGEM")
 
-uploaded_file, df, nome_arquivo = load_upload_file()
-
 menu_option = st.sidebar.radio(
     "Selecione uma opção",
-    ["Treinamento", "Comparação", "Modelo Custom", "Previsão", "Deploy", "Download"],
+    [
+        "Treinamento",
+        #"Comparação",
+        "Modelo Custom",
+        "Alterar Dados",
+        "Previsão",
+        "Deploy",
+        "Download",
+    ],
 )
 
 if menu_option == "Treinamento":
@@ -67,171 +85,308 @@ if menu_option == "Treinamento":
     r2 = ""
 
     st.title("📊 Treinamento do Modelo")
-    aba_dataset, aba_modelo, aba_alterar_base = st.tabs(
-        ["📊 Análise do Dataset", "📈 Avaliação do Modelo", "📈 Alterar Base"]
-    )
 
-    target_column = validar_coluna_alvo(df)
-    df = preprocess_data(df, target_column)
-    X_train, X_test, y_train, y_test = dividir_conjunto_dados(df, target_column)
-
-    sample_input = X_train.iloc[0].to_dict()
-    salvar_json_entrada_exemplo(nome_arquivo, sample_input)
+    uploaded_file, nome_arquivo, column_names = load_upload_file()
+    target_column = st.sidebar.selectbox("Escolha a variável alvo", column_names)
 
     st.sidebar.header("Configurações do Modelo")
-    modelo_selecionado = st.sidebar.selectbox(
-        "Escolha o Modelo", ["Random Forest", "XGBoost", "Custom"]
-    )
+    modelo_selecionado = st.sidebar.selectbox("Escolha o Modelo", ["Random Forest", "XGBoost",  "XGBoost-Lote", "Custom"])
 
     if modelo_selecionado == "Random Forest":
-        modelo = get_modelo_forest_regressor()
+        modelo = get_modelo_ramdom_forest_regressor()
     elif modelo_selecionado == "XGBoost":
         modelo = get_modelo_xbg_regressor()
+    elif modelo_selecionado == "XGBoost-Lote":
+        modelo = get_modelo_xbg_regressor()        
     elif modelo_selecionado == "Custom":
         modelos_custom = listar_modelos()
 
-        # Se houver modelos, permitir seleção e download
         if modelos_custom:
             df_modelos = pd.DataFrame(modelos_custom)
             modelos = [f"{m['arquivo_pickle']}" for m in modelos_custom]
 
-            model_filename = st.sidebar.selectbox(
-                "Escolha o modelo para treinamento", modelos
-            )
+            model_filename = st.sidebar.selectbox("Escolha o modelo para treinamento", modelos)
 
             with open(model_filename, "rb") as f:
                 modelo = pickle.load(f)
 
-    if "modelo" not in st.session_state or st.session_state["modelo"] is None:
-        st.session_state["modelo"] = {}
+    if nome_arquivo is not None:
+        scaler = StandardScaler()
+        test_size = 0.2
 
-    with aba_dataset:
-        st.subheader("📊 Visão Geral do Dataset")
-        st.write(df.head())
+        accumulated_predictions = []
+        accumulated_actuals = []
+        accumulated_X_test = []
 
-        st.subheader("📊 Estatísticas Gerais do Dataset")
-        st.write(df.describe())
-
-        st.subheader("📊 Estatísticas por Variável")
-        coluna_selecionada = st.selectbox(
-            "Escolha uma variável para análise", df.columns
-        )
-        st.write(df[coluna_selecionada].describe())
-
-    with aba_modelo:
         if st.sidebar.button("Treinar Modelo"):
-            modelo.fit(X_train, y_train)
-            st.session_state["modelo"][modelo_selecionado] = modelo
+            start_treinamento = time.perf_counter()
 
-            y_pred = modelo.predict(X_test)
-            y_pred_class = np.round(y_pred)
-
-            mae = mean_absolute_error(y_test, y_pred)
-            mse = mean_squared_error(y_test, y_pred)
-            r2 = r2_score(y_test, y_pred)
-
-            st.write(f"### Desempenho do Modelo: {modelo_selecionado} - {nome_arquivo}")
-            st.write(f"📉 **MAE:** {mae:.2f}")
-            st.write(f"📉 **MSE:** {mse:.2f}")
-            st.write(f"📈 **R²:** {r2:.2f}")
-
-            st.subheader("📊 Comparação de Preços Reais vs Previstos")
-            df_resultados = pd.DataFrame({"Real": y_test.values, "Previsto": y_pred})
-            st.line_chart(df_resultados)
-
-            df_erros = pd.DataFrame({"Erro": y_test.values - y_pred})
-            st.subheader("🔍 Erros da Previsão")
-            st.bar_chart(df_erros)
-
-            if hasattr(modelo, "feature_importances_"):
-                importances = modelo.feature_importances_
-                feature_names = X_train.columns
-                df_importance = pd.DataFrame(
-                    {"Feature": feature_names, "Importância": importances}
-                )
-                df_importance = df_importance.sort_values(by="Importância", ascending=False)
-                st.subheader("📊 Importância das Variáveis")
-                st.bar_chart(df_importance.set_index("Feature"))
-
-            # Visualização dos preços reais vs previstos
-            fig, ax = plt.subplots(figsize=(10, 5))
-            sns.histplot(y_test, label="Real", color="blue", kde=True, alpha=0.5, ax=ax)
-            sns.histplot(y_pred, label="Previsto", color="red", kde=True, alpha=0.5, ax=ax)
-            ax.legend()
-            ax.set_title("Distribuição dos preços reais vs previstos")
-            st.pyplot(fig)
+            is_incremental = hasattr(modelo, "partial_fit")
+            is_xgboost = True if modelo_selecionado == "XGBoost-Lote" else False
             
-            amostra_X = X_train.sample(n=50, random_state=42)
-            explainer = shap.TreeExplainer(modelo)
-            shap_values = explainer.shap_values(amostra_X)
-            st.subheader("🌟 Importância das Variáveis - Modelo com SHAP")
-            fig, ax = plt.subplots(figsize=(7, 5))
-            shap.summary_plot(shap_values, amostra_X, show=False)
-            st.pyplot(fig)
+            if not is_incremental and not is_xgboost:
+                st.write("Treinamento NÃO incremental. Ajustando o modelo para o conjunto de dados inteiro.")
+
+                query = f"SELECT * FROM '{nome_arquivo}'"
+                df_full = conn.execute(query).fetchdf()
+
+                X_full, y_full = df_full.drop(columns=[target_column]), df_full[target_column]
+
+                X_train, X_test, y_train, y_test = train_test_split(X_full, y_full, test_size=test_size, random_state=42)
+
+                sample_input = X_train.iloc[0].to_dict()
+                salvar_json_entrada_exemplo(nome_arquivo, sample_input)
+
+                scaler.fit(X_train)
+                X_train = scaler.transform(X_train)
+                X_test = scaler.transform(X_test)
+                modelo.fit(X_train, y_train)
+                y_pred = modelo.predict(X_test)
+                accumulated_predictions.extend(y_pred)
+                accumulated_actuals.extend(y_test)
+                accumulated_X_test.extend(X_test)
+                
+                del df_full, X_train, X_test, y_train, y_test 
+                
+            elif is_xgboost:
+                st.write("Treinamento incremental em lote para XGBoost.")
+                offset = 0
+                first_chunk = True
+                save_example = True
+                booster = None
+                params = modelo.get_params()
+
+                while True:
+                    query = f"SELECT * FROM '{nome_arquivo}' LIMIT {CHUNK_SIZE} OFFSET {offset}"
+                    df_chunk = conn.execute(query).fetchdf()
+
+                    if df_chunk.empty:
+                        break
+
+                    X_chunk, y_chunk = df_chunk.drop(columns=[target_column]), df_chunk[target_column]
+
+                    if save_example:
+                        sample_input = X_chunk.iloc[0].to_dict()
+                        salvar_json_entrada_exemplo(nome_arquivo, sample_input)
+                        save_example = False
+                    
+                    if first_chunk:
+                        scaler.fit(X_chunk)
+                        first_chunk = False
+
+                    X_chunk = scaler.transform(X_chunk)
+                    X_chunk = np.nan_to_num(X_chunk, nan=0.0, posinf=1e10, neginf=-1e10)
+                    y_chunk = np.nan_to_num(y_chunk, nan=0.0, posinf=1e10, neginf=-1e10)                
+                    limite_superior = np.percentile(y_chunk, 99.9)
+                    y_chunk = np.clip(y_chunk, a_min=None, a_max=limite_superior)
+
+                    X_train_chunk, X_test_chunk, y_train_chunk, y_test_chunk = train_test_split(
+                        X_chunk, y_chunk, test_size=test_size, random_state=42
+                    )
+
+                    dtrain = xgb.DMatrix(X_train_chunk, label=y_train_chunk)
+
+                    if booster is None:
+                        booster = xgb.train(params, dtrain, num_boost_round=10)
+                    else:
+                        booster = xgb.train(params, dtrain, num_boost_round=10, xgb_model=booster)
+
+                    dtest = xgb.DMatrix(X_test_chunk)
+                    y_pred_chunk = booster.predict(dtest)
+                    accumulated_predictions.extend(y_pred_chunk)
+                    accumulated_actuals.extend(y_test_chunk)
+                    accumulated_X_test.extend(X_test_chunk)
+
+                    offset += CHUNK_SIZE
+                
+                modelo = booster
+                
+            else:
+                st.write("Treinamento incremental em lote.")
+                offset = 0
+                first_chunk = True
+                save_example = True
+
+                while True:
+                    query = f"SELECT * FROM '{nome_arquivo}' LIMIT {CHUNK_SIZE} OFFSET {offset}"
+                    df_chunk = conn.execute(query).fetchdf()
+
+                    if df_chunk.empty:
+                        break
+                    
+                    X_chunk, y_chunk = df_chunk.drop(columns=[target_column]), df_chunk[target_column]
+
+                    if save_example:
+                        sample_input = X_chunk.iloc[0].to_dict()
+                        salvar_json_entrada_exemplo(nome_arquivo, sample_input)
+                        save_example = False
+
+                    if first_chunk:
+                        scaler.fit(X_chunk)  # Ajusta o scaler na primeira iteração
+                        first_chunk = False
+
+                    X_chunk = scaler.transform(X_chunk)
+
+                    X_train_chunk, X_test_chunk, y_train_chunk, y_test_chunk = train_test_split(
+                        X_chunk, y_chunk, test_size=test_size, random_state=42
+                    )
+
+                    if hasattr(modelo, "partial_fit"):
+                        modelo.partial_fit(X_train_chunk, y_train_chunk)  # Treina de forma incremental
+                    else:
+                        modelo.fit(X_train_chunk, y_train_chunk)  # Treina normalmente
+
+                    y_pred_chunk = modelo.predict(X_test_chunk)
+                    accumulated_predictions.extend(y_pred_chunk)
+                    accumulated_actuals.extend(y_test_chunk)
+                    accumulated_X_test.extend(X_test_chunk)
+
+                    offset += CHUNK_SIZE
+
+            gc.collect()
+            
+            finish_treinamento = time.perf_counter()
+            tempo_treinamento = finish_treinamento - start_treinamento
+            st.write(f"### Tempo de Treinamento: {tempo_treinamento:.2f} segundos")
+
+            mae = mean_absolute_error(accumulated_actuals, accumulated_predictions)
+            mse = mean_squared_error(accumulated_actuals, accumulated_predictions)
+            r2 = r2_score(accumulated_actuals, accumulated_predictions)
+            cv_scores = cross_val_score(modelo, accumulated_X_test, accumulated_predictions, cv=5, scoring='neg_mean_squared_error')           
+            mean_cv_mse = -cv_scores.mean()
+            
+            # Precisão: capacidade de prever corretamente uma classe positiva            
+            accumulated_predictions_int = np.round(accumulated_predictions).astype(int)
+            accumulated_actuals_int = np.round(accumulated_actuals).astype(int)
+            precision = precision_score(accumulated_actuals_int, accumulated_predictions_int, average="weighted")
+            recall = recall_score(accumulated_actuals_int, accumulated_predictions_int, average="weighted")
 
             model_filename = gerar_modelo_pickle(
                 uploaded_file=nome_arquivo,
-                X_train=X_train,
                 modelo=modelo,
                 modelo_selecionado=modelo_selecionado,
                 mae=mae,
                 mse=mse,
                 r2=r2,
+                tempo_treinamento=tempo_treinamento,
             )
+
+            st.write(f"### Desempenho do Modelo: {modelo_selecionado} - {nome_arquivo}")
+
+            st.write(f"📉 **Acurácia final:** {accuracy_score(accumulated_actuals_int, accumulated_predictions_int):.5f}")
+            st.write(f"📉 **Precisão:** {precision:.4f}")
+            st.write(f"📉 **Recall:** {recall:.4f}")
+            st.write(f"📉 **MAE:** {mae:.2f}")
+            st.write(f"📉 **MSE:** {mse:.2f}")
+            st.write(f"📈 **R²:** {r2:.2f}")
+            st.write(f"📈 **Validação Cruzada MSE Médio:** {mean_cv_mse:.2f}")
+
+            accumulated_results = pd.DataFrame({"Actual": accumulated_actuals, "Predicted": accumulated_predictions})
+            accumulated_results.to_csv(f"accumulated_results_{nome_arquivo}.csv", index=False)
+
+            plt.figure(figsize=(10, 6))
+            sns.scatterplot(x="Actual", y="Predicted", data=accumulated_results)
+
+            plt.plot(
+                [
+                    accumulated_results["Actual"].min(),
+                    accumulated_results["Actual"].max(),
+                ],
+                [
+                    accumulated_results["Actual"].min(),
+                    accumulated_results["Actual"].max(),
+                ],
+                color="red",
+                linestyle="--",
+            )
+
+            # Adicionando rótulos e título
+            plt.xlabel("Valores Reais")
+            plt.ylabel("Valores Preditos")
+            plt.title("Valores Reais vs. Preditos")
+
+            st.pyplot(plt)  # Exibe o gráfico com matplotlib no Streamlit
             
-    with aba_alterar_base:
-        st.subheader("📊 Alterar Base")
+            del accumulated_predictions, accumulated_actuals
+            gc.collect()
 
-        # Listar arquivos disponíveis para edição
-        arquivos_disponiveis = [
-            f for f in os.listdir(UPLOAD_BASES_PATH) if f.endswith(".csv")
-        ]
+if menu_option == "Alterar Dados":
+    st.subheader("📊 Alterar Base")
 
-        if arquivos_disponiveis:
-            arquivo_selecionado = st.selectbox(
-                "📑 Escolha um arquivo para editar:", arquivos_disponiveis
-            )
+    # Listar arquivos disponíveis para edição
+    arquivos_disponiveis = ["Selecione um arquivo..."] + [
+        f for f in os.listdir(UPLOAD_BASES_PATH) if f.endswith(".csv")
+    ]
 
-            if arquivo_selecionado:
-                file_path = os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado)
-                # Detectar delimitador automaticamente ("," ou ";")
-                try:
-                    df = pd.read_csv(file_path, delimiter=";")
-                except Exception as e:
-                    st.error(f"Erro ao ler o arquivo: O delimitardor deve ser ';' - {str(e)}")
-                    df = None
+    if arquivos_disponiveis:
+        arquivo_selecionado = st.selectbox(
+            "📑 Escolha um arquivo para editar:", arquivos_disponiveis
+        )
 
-                if df is not None:
-                    st.subheader("📝 Edite os dados antes do treinamento")
-                    edited_df = st.data_editor(
-                        df, num_rows="dynamic"
-                    )  # Permite edição na interface
+        if arquivo_selecionado and arquivo_selecionado != "Selecione um arquivo...":
+            file_path = os.path.join(UPLOAD_BASES_PATH, arquivo_selecionado)
+            try:
+                # Carregar o arquivo em pedaços
+                chunksize = (
+                    1000  # Define o tamanho do pedaço (exemplo: 1000 linhas por vez)
+                )
+                chunk_list = []
+                for chunk in pd.read_csv(file_path, delimiter=";", chunksize=chunksize):
+                    chunk_list.append(chunk)
 
-                    id = datetime.now().strftime("%H%M%S")
+                # Exibir apenas um pedaço por vez
+                num_chunks = len(chunk_list)
+                if num_chunks > 1:
+                    chunk_index = st.slider(
+                        "Escolha o pedaço a ser editado", 0, num_chunks - 1, 0
+                    )
+                else:
+                    chunk_index = 0
 
-                    # Botão para salvar alterações
-                    if st.button("💾 Salvar Alterações"):
-                        new_file_path = os.path.join(UPLOAD_BASES_PATH, f"{id}_{arquivo_selecionado}")
-                        edited_df.to_csv(new_file_path, index=False, sep=';')
-                        st.success(
-                            "✅ Alterações salvas com sucesso! Pronto para treinamento."
-                        )
+                df = chunk_list[chunk_index]
+
+                st.subheader(
+                    f"📝 Edite os dados - Pedaço {chunk_index + 1} de {num_chunks}"
+                )
+
+                # Permite edição na interface
+                edited_df = st.data_editor(df, num_rows="dynamic")
+
+                id = datetime.now().strftime("%H%M%S")
+
+                # Botão para salvar alterações
+                if st.button("💾 Salvar Alterações"):
+                    # Carregar o arquivo completo de volta ou apenas o pedaço alterado, se necessário
+                    df_start = chunk_list[:chunk_index]
+                    df_end = chunk_list[chunk_index + 1 :]
+                    full_df = pd.concat(
+                        df_start + [edited_df] + df_end, ignore_index=True
+                    )
+
+                    # Salvar no arquivo original
+                    full_df.to_csv(file_path, index=False, sep=";")
+                    st.success(
+                        "✅ Alterações salvas com sucesso! Pronto para treinamento."
+                    )
+
+            except Exception as e:
+                st.error(
+                    f"Erro ao ler o arquivo: O delimitador deve ser ';' - {str(e)}"
+                )
+            finally:
+                # Limpa a memória
+                del df
+                gc.collect()
 
 if menu_option == "Comparação":
+    uploaded_file, df, nome_arquivo = load_upload_file()
     mae = ""
     mse = ""
     r2 = ""
 
     st.title("📊 Treinamento e Comparação de Modelos")
     target_column = validar_coluna_alvo(df)
-
-    df = preprocess_data(df, target_column)
-
-    X = df.drop(columns=[target_column])
-    y = df[target_column]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+    X_train, X_test, y_train, y_test = dividir_conjunto_dados(df, target_column)
 
     st.sidebar.header("Configurações do Treinamento")
     modelos_selecionados = st.sidebar.multiselect(
@@ -244,21 +399,28 @@ if menu_option == "Comparação":
 
     if "Random Forest" in modelos_selecionados:
         st.sidebar.subheader("🔹 Hiperparâmetros - Random Forest")
-        modelo_forest = get_modelo_forest_regressor()
-
+        modelo_forest = get_modelo_ramdom_forest_regressor()
     if "XGBoost" in modelos_selecionados:
         st.sidebar.subheader("🔹 Hiperparâmetros - XGBoost")
         modelo_xgb = get_modelo_xbg_regressor()
 
-    if st.sidebar.button("Treinar Modelos"):
+    if st.sidebar.button("Comparar Modelos"):
         for modelo_nome in modelos_selecionados:
             if modelo_nome == "Random Forest":
                 modelo = modelo_forest
             elif modelo_nome == "XGBoost":
                 modelo = modelo_xgb
 
+            start_treinamento = time.perf_counter()
+
             modelo.fit(X_train, y_train)
             y_pred = modelo.predict(X_test)
+
+            finish_treinamento = time.perf_counter()
+            tempo_treinamento = finish_treinamento - start_treinamento
+            st.write(
+                f"### Tempo de Treinamento: {tempo_treinamento:.2f} segundos - {modelo_nome}"
+            )
 
             mae = mean_absolute_error(y_test, y_pred)
             mse = mean_squared_error(y_test, y_pred)
@@ -269,6 +431,7 @@ if menu_option == "Comparação":
                 "MSE": mse,
                 "R²": r2,
                 "Modelo": modelo,
+                "Tempo Treinamento": tempo_treinamento,
             }
 
             model_filename = gerar_modelo_pickle(
@@ -279,12 +442,13 @@ if menu_option == "Comparação":
                 mae=mae,
                 mse=mse,
                 r2=r2,
+                tempo_treinamento=tempo_treinamento,
             )
 
         st.sidebar.success("Modelos treinados com sucesso! ✅")
 
         # Salvar no session_state para previsões futuras
-        st.session_state["modelos"] = resultados
+        # st.session_state["modelos"] = resultados
 
         # Mostrar Resultados
         st.subheader("📊 Comparação de Modelos")
@@ -294,19 +458,6 @@ if menu_option == "Comparação":
         # Gráfico de Comparação
         st.bar_chart(df_resultados)
 
-        # Importância das Features
-        for modelo_nome, info in resultados.items():
-            if hasattr(info["Modelo"], "feature_importances_"):
-                st.subheader(f"📊 Importância das Variáveis - {modelo_nome}")
-                importances = info["Modelo"].feature_importances_
-                df_importance = pd.DataFrame(
-                    {"Feature": X_train.columns, "Importância": importances}
-                )
-                df_importance = df_importance.sort_values(
-                    by="Importância", ascending=False
-                )
-                st.bar_chart(df_importance.set_index("Feature"))
-
 if menu_option == "Previsão":
     aba_previsao, aba_consulta_historico_modelos = st.tabs(
         ["📊 Previsao", "📈 Consultar Resultados Histórico"]
@@ -315,12 +466,8 @@ if menu_option == "Previsão":
     with aba_previsao:
         st.title("📈 Previsão de Preço")
         st.sidebar.header("Fazer Previsão")
-        entrada_modelo_disponivel = [
-            file for file in os.listdir() if file.endswith(".json")
-        ]
-        entrada_modelo_escolhido = st.sidebar.selectbox(
-            "Escolha o modelo para previsão", entrada_modelo_disponivel
-        )
+        entrada_modelo_disponivel = [ file for file in os.listdir() if file.endswith(".json") ]
+        entrada_modelo_escolhido = st.sidebar.selectbox("Escolha o modelo para previsão", entrada_modelo_disponivel)
 
         if entrada_modelo_escolhido:
             try:
@@ -342,28 +489,22 @@ if menu_option == "Previsão":
             if df[col].dtype in ["int64", "float64"]:
                 entrada_usuario[col] = st.number_input(f"{col}", value=float(df[col].iloc[0]))
 
-        modelo_disponivel = [
-            file for file in os.listdir(DIRETORIO_MODELOS_PATH) if file.endswith(".pkl")
-        ]
-        modelo_escolhido = st.sidebar.selectbox(
-            "Escolha o modelo para previsão", modelo_disponivel
-        )
+        modelo_disponivel = [ file for file in os.listdir(DIRETORIO_MODELOS_PATH) if file.endswith(".pkl")]
+        modelo_escolhido = st.sidebar.selectbox("Escolha o modelo para previsão", modelo_disponivel)
 
         if st.sidebar.button("Prever Preço"):
             try:
-                modelo_escolhido_path = os.path.join(
-                    DIRETORIO_MODELOS_PATH, f"{modelo_escolhido}"
-                )
+                modelo_escolhido_path = os.path.join(DIRETORIO_MODELOS_PATH, f"{modelo_escolhido}")
                 with open(modelo_escolhido_path, "rb") as f:
-                    modelo_data = pickle.load(f)
-
-                modelo_previsao = modelo_data
-                # feature_names = modelo_data["features"]  # Pegando os nomes das features
+                    modelo_previsao = pickle.load(f)
 
                 entrada_df = pd.DataFrame([entrada_usuario])
 
                 # Garantir que as colunas estão na mesma ordem e faltantes são preenchidas com 0
                 entrada_df = entrada_df.reindex(columns=df.columns, fill_value=0)
+
+                # if "XGBoos" in modelo_escolhido:
+                #     entrada_df = xgb.DMatrix(entrada_df)  # Convertendo X_test para DMatrix
 
                 previsao = modelo_previsao.predict(entrada_df)[0]
                 st.sidebar.success(f"💰 Preço Sugerido: R$ {previsao:.2f}")
@@ -386,7 +527,7 @@ if menu_option == "Deploy":
     API_URL = "https://sua-api.com/upload"
 
     st.title("📊 Deploy de Modelos Treinados")
-    
+
     modelo_disponivel = [
         file for file in os.listdir(DIRETORIO_MODELOS_PATH) if file.endswith(".pkl")
     ]
@@ -405,17 +546,14 @@ if menu_option == "Deploy":
             if response.status_code == 200:
                 st.success("✅ Arquivos enviados com sucesso!")
             else:
-                st.error(
-                    f"❌ Erro ao enviar: {response.status_code} - {response.text}"
-                )
+                st.error(f"❌ Erro ao enviar: {response.status_code} - {response.text}")
 
         except Exception as e:
             st.error(f"Erro ao enviar arquivos: {str(e)}")
 
 if menu_option == "Download":
-    
     st.title("📊 Download de Modelos Treinados")
-    
+
     modelo_disponivel = [
         file for file in os.listdir(DIRETORIO_MODELOS_PATH) if file.endswith(".pkl")
     ]

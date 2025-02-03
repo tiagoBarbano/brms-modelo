@@ -37,3 +37,4 @@ class HistoricoModel(MongoBaseModel):
     mse: str
     r2: str
     arquivo: str
+    tempo_treinamento: str

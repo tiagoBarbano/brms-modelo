@@ -15,9 +15,24 @@ version: "3"
 
 volumes:
   dbdata5:
+  dbdata4:
 
 
 services:
+  modelagem:
+    build: ../
+    depends_on:
+      - mongodb
+    restart: on-failure
+    volumes:
+      - dbdata4:/data/db
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '0.5'
+    #       memory: '0.5GB'
+    network_mode: "host"
+
   mongodb:
     image: mongo:latest
     container_name: mongodb
@@ -26,9 +41,10 @@ services:
       - PGID=1000
     volumes:
       - dbdata5:/data/db
-    ports:
-      - 27017:27017
+    # ports:
+    #   - 27017:27017
     restart: "unless-stopped"
+    network_mode: "host"    
     # logging: *default-logging
 
   redis:

@@ -4,13 +4,13 @@ import numpy as np
 # Gerando dados fictícios
 np.random.seed(42)
 
-n = 1000  # Número de registros
+n = 1_000_000  # Número de registros
 
 df = pd.DataFrame({
     "idade": np.random.randint(18, 70, n),
     "sexo": np.random.choice(["Masculino", "Feminino"], n),
     "estado_civil": np.random.choice(["Solteiro", "Casado", "Viúvo"], n),
-    "renda_anual": np.random.randint(20000, 200000, n),
+    "renda_anual": np.random.randint(10000, 200000, n),
     "valor_atual_apolice": np.random.randint(500, 5000, n),
     "numero_sinistros": np.random.randint(0, 5, n),
     "tipo_seguro": np.random.choice(["Auto", "Residencial", "Saúde", "Vida"], n),
@@ -20,7 +20,11 @@ df = pd.DataFrame({
     "seguradora_anterior": np.random.choice(["Sim", "Não"], n),
     "area_risco": np.random.choice(["Baixo", "Médio", "Alto"], n),
     "uso_frequente": np.random.choice(["Diário", "Ocasional", "Raro"], n),
-    "historico_credito": np.random.randint(300, 850, n)
+    "historico_credito": np.random.randint(300, 850, n),
+    "historico_credito_interno": np.random.randint(300, 850, n),
+    "historico_credito_externo": np.random.randint(300, 1000, n),
+    "premio_congenere": np.random.randint(500, 5000, n),
+            
 })
 
 # Criando um preço-alvo baseado nos dados (simulado)
@@ -33,5 +37,4 @@ df["preco_ideal"] = (
 )
 
 # Salvar o dataset para usar depois
-df.to_csv("dados_seguro.csv", index=False)
-print(df.head())
+df.to_csv("dados_seguro.csv", index=False, sep=';')
