@@ -53,6 +53,7 @@ def validar_coluna_alvo(df):
             "⚠️ Nenhum arquivo foi carregado. Por favor, faça o upload de um arquivo CSV."
         )
         st.stop()
+        target_column=''
     return target_column
 
 
