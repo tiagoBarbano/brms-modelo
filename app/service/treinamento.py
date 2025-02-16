@@ -2,8 +2,12 @@ import os
 import streamlit as st
 import pandas as pd
 import time
+import mlflow
+import mlflow.sklearn
+
+from mlflow.models import infer_signature
 from app.core.config import CHUNK_SIZE, UPLOAD_BASES_PATH
-from app.core.utils import gerar_modelo_pickle
+# from app.core.utils import gerar_modelo_pickle
 from app.service.preprocess import preprocess_data
 from app.service.training import (
     train_model,
@@ -13,6 +17,7 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+mlflow.set_tracking_uri("http://localhost:5000")
 
 def treinamento():
     st.title("📊 Treinamento do Modelo")
@@ -73,18 +78,42 @@ def treinamento():
         optimize_params = st.sidebar.checkbox("Otimizar Hiperparâmetros", value=False)
 
         if st.sidebar.button("Treinar Modelo"):
+            # mlflow.create_experiment(f"experimento_{nome_arquivo}_{model_type}")
             start_treinamento = time.perf_counter()
-            if optimize_params:
-                model, best_params = train_model(
-                    X_train, y_train, model_type=model_type
+            
+            with mlflow.start_run(run_name=f"{model_type} - {nome_arquivo}"):
+                if optimize_params:
+                    model, best_params = train_model(
+                        X_train, y_train, model_type=model_type
+                    )
+                    st.write(f"Melhores hiperparâmetros: {best_params}")
+                else:
+                    model, _ = train_model(
+                        X_train, y_train, model_type=model_type, param_grid={}
+                    )
+                # Log the hyperparameters
+                mlflow.log_params(best_params if optimize_params else {})
+                
+                mae, mse, r2, mean_cv_mse = evaluate_model(model, X_test, y_test)
+                
+                mlflow.log_metric("mae", mae)
+                mlflow.log_metric("mse", mse)
+                mlflow.log_metric("r2", r2)
+                mlflow.log_metric("mean_cv_mse", mean_cv_mse)
+                
+                    # Infer the model signature
+                signature = infer_signature(X_train, model.predict(X_train))
+                    # Log the model
+                mlflow.sklearn.log_model(
+                    sk_model=model,
+                    artifact_path="automovel",
+                    signature=signature,
+                    input_example=X_train,
+                    registered_model_name="casco_auto_individual",
                 )
-                st.write(f"Melhores hiperparâmetros: {best_params}")
-            else:
-                model, _ = train_model(
-                    X_train, y_train, model_type=model_type, param_grid={}
-                )
+                
 
-            mae, mse, r2, mean_cv_mse = evaluate_model(model, X_test, y_test)
+                
 
             finish_treinamento = time.perf_counter()
             tempo_treinamento = finish_treinamento - start_treinamento
@@ -95,12 +124,12 @@ def treinamento():
             st.write(f"**R²:** {r2:.2f}")
             st.write(f"**Validação Cruzada MSE Médio:** {mean_cv_mse:.2f}")
 
-            gerar_modelo_pickle(
-                uploaded_file=nome_arquivo,
-                modelo=model,
-                modelo_selecionado=model_type,
-                mae=mae,
-                mse=mse,
-                r2=r2,
-                tempo_treinamento=tempo_treinamento,
-            )
+            # gerar_modelo_pickle(
+            #     uploaded_file=nome_arquivo,
+            #     modelo=model,
+            #     modelo_selecionado=model_type,
+            #     mae=mae,
+            #     mse=mse,
+            #     r2=r2,
+            #     tempo_treinamento=tempo_treinamento,
+            # )

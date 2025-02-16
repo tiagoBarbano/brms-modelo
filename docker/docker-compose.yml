@@ -15,9 +15,33 @@ version: "3"
 
 volumes:
   dbdata5:
+  dbdata4:
+  mlflow-data:
 
 
 services:
+  modelagem:
+    build: ../
+    depends_on:
+      - mongodb
+    restart: on-failure
+    volumes:
+      - dbdata4:/data/db
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '0.5'
+    #       memory: '0.5GB'
+    network_mode: "host"
+
+  mlflow:
+    build:
+      context: ../mlflow
+      dockerfile: Dockerfile.mlflow
+    network_mode: "host"
+    volumes:
+      - mlflow-data:/mlflow
+
   mongodb:
     image: mongo:latest
     container_name: mongodb
@@ -26,9 +50,10 @@ services:
       - PGID=1000
     volumes:
       - dbdata5:/data/db
-    ports:
-      - 27017:27017
+    # ports:
+    #   - 27017:27017
     restart: "unless-stopped"
+    network_mode: "host"    
     # logging: *default-logging
 
   redis:
@@ -37,6 +62,7 @@ services:
     ports:
       - "6379:6379"
     logging: *default-logging
+    network_mode: "host"   
 
   grafana:
     image: grafana/grafana:latest
@@ -49,12 +75,14 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
     logging: *default-logging
+    network_mode: "host"   
 
   loki:
     image: grafana/loki:latest
     ports:
       - 3100:3100
     command: -config.file=/etc/loki/local-config.yaml
+    network_mode: "host"   
 
   promtail:
     image: grafana/promtail:latest
@@ -67,6 +95,7 @@ services:
     depends_on:
       - loki
     logging: *default-logging
+    network_mode: "host"   
 
   prometheus:
     container_name: prometheus
@@ -87,29 +116,7 @@ services:
       - "9090:9090"
     extra_hosts: [ "host.docker.internal:host-gateway" ]
     logging: *default-logging
-
-  # jaeger-all-in-one:
-  #   image: jaegertracing/all-in-one
-  #   volumes:
-  #     - "./jaeger-ui.json:/etc/jaeger/jaeger-ui.json"
-  #   command:
-  #     - "--prometheus.query.support-spanmetrics-connector=true"
-  #     - "--prometheus.server-url=http://prometheus:9090"
-  #   ports:
-  #     - 5775:5775/udp
-  #     - 6831:6831/udp
-  #     - 6832:6832/udp
-  #     - 5778:5778
-  #     - 9411:9411
-  #     - 16686:16686
-  #     - 14268:14268
-  #     - 14269:14269
-  #     - 14250:14250
-  #   environment:
-  #     - PROMETHEUS_SERVER_URL=http://prometheus:9090
-  #     - SAMPLING_CONFIG_TYPE=adaptive
-  #     - METRICS_STORAGE_TYPE=prometheus
-  #   logging: *default-logging
+    network_mode: "host"   
 
   tempo:
     image: grafana/tempo:2.3.1
@@ -120,105 +127,4 @@ services:
     depends_on:
       - loki
     logging: *default-logging
-  # otelcol:
-  #   image: otel/opentelemetry-collector-contrib
-  #   command:
-  #     [
-  #       "--config=/etc/otelcol-config.yml",
-  #       "--config=/etc/otelcol-config-extras.yml"
-  #     ]
-  #   volumes:
-  #     - ./otelcol-config.yml:/etc/otelcol-config.yml
-  #     - ./otelcol-config-extras.yml:/etc/otelcol-config-extras.yml
-  #   ports:
-  #     - "1888:1888" # pprof extension
-  #     - "8888:8888" # Prometheus metrics exposed by the collector
-  #     - "8889:8889" # Prometheus exporter metrics
-  #     - "13133:13133" # health_check extension
-  #     - "4317:4317" # OTLP gRPC receiver
-  #     - "55679:55679" # zpages extension
-  #   depends_on:
-  #     - jaeger-all-in-one
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 125M
-  #   logging: *default-logging
-
-  # rabbit-mq:
-  #   image: rabbitmq:3.12.10-management
-  #   ports:
-  #     - 5672:5672
-  #     - 15672:15672
-  #   logging: *default-logging
-
-  # proxy:
-  #   image: traefik:v2.8
-  #   command:
-  #     - '--api.insecure=true'
-  #     - '--providers.docker'
-  #     - '--providers.docker.endpoint=unix:///var/run/docker.sock'
-  #     - '--providers.docker.watch=true'
-  #     - '--providers.docker.exposedbydefault=true'
-  #     - '--log.level=DEBUG'
-  #     - '--entrypoints.web.address=:80'
-  #     - '--accesslog=true'
-  #     - '--tracing.serviceName=traefik'
-  #     - '--tracing.spanNameLimit=250'
-  #     - '--tracing.jaeger=true'
-  #     - '--tracing.jaeger.samplingServerURL=http://localhost:5778/sampling'
-  #     - '--tracing.jaeger.samplingType=const'
-  #     - '--tracing.jaeger.samplingParam=1.0'
-  #     - '--tracing.jaeger.localAgentHostPort=localhost:6831'
-  #     - '--tracing.jaeger.gen128Bit=true'
-  #     - '--tracing.jaeger.propagation=jaeger'
-  #     - '--tracing.jaeger.traceContextHeaderName=traceparent'
-  #     - '--tracing.jaeger.collector.endpoint=http://localhost:14268/api/traces?format=jaeger.thrift'
-  #     - '--metrics.prometheus=true'
-  #     - '--metrics.prometheus.addEntryPointsLabels=true'
-  #     - '--metrics.prometheus.addrouterslabels=true'
-  #     - '--metrics.prometheus.addServicesLabels=true'
-  #     - '--entryPoints.metrics.address=:8082'
-  #     - '--metrics.prometheus.entryPoint=metrics'
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #   ports:
-  #     - '80:80'
-  #     - '8082:8080'
-  #   logging: *default-logging
-
-  # spring-admin:
-  #   image: michayaak/spring-boot-admin:2.2.3-1
-  #   ports:
-  #     - '8081:8080'
-  #   labels:
-  #     - "traefik.enable=true"
-  #     - "traefik.http.routers.spring.rule=Host(`spring.localhost`)"
-  #     - "traefik.http.services.spring.loadbalancer.server.port=8080"
-  #   extra_hosts:
-  #     - "host.docker.internal:host-gateway"
-  #   logging: *default-logging
-
-  # admin:
-  #   image: 'gorules/brms'
-  #   ports:
-  #     - '9080:80'
-  #   depends_on:
-  #     - pg-database
-  #   environment:
-  #     DB_HOST: pg-database
-  #     DB_PORT: 5432
-  #     DB_USER: my-user
-  #     DB_PASSWORD: my-password
-  #     DB_NAME: test-db
-  #     DB_SSL_DISABLED: true
-  #     LICENSE_KEY: "30ea52df-720d-4473-8136-93014dd67e1c" # Obtain it from https://portal.gorules.io
-
-  # pg-database:
-  #   image: 'postgres'
-  #   environment:
-  #     POSTGRES_USER: my-user
-  #     POSTGRES_PASSWORD: my-password
-  #     POSTGRES_DB: test-db
-  #   ports:
-  #     - '5432:5432'
+    network_mode: "host"   

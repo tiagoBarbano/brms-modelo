@@ -1,4 +1,5 @@
 import pickle
+import mlflow
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.linear_model import LinearRegression
@@ -6,6 +7,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import GridSearchCV, cross_val_score
 import pandas as pd
 
+@mlflow.trace
 def train_model(X_train, y_train, model_type="Random Forest", param_grid=None):
     if model_type == "Random Forest":
         model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42, n_jobs=-1)
@@ -50,7 +52,7 @@ def train_model(X_train, y_train, model_type="Random Forest", param_grid=None):
 
     return best_model, best_params
 
-
+@mlflow.trace
 def evaluate_model(model, X_test, y_test):
     y_pred = model.predict(X_test)
     mae = mean_absolute_error(y_test, y_pred)

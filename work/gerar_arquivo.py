@@ -33,5 +33,5 @@ df["preco_ideal"] = (
 )
 
 # Salvar o dataset para usar depois
-df.to_csv("dados_seguro.csv", index=False)
+df.to_csv("dados_seguro.csv", index=False, sep=";")
 print(df.head())
